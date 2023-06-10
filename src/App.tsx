@@ -1,4 +1,6 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useState, useEffect } from 'react'
+import { Container } from './Container';
+import { Context } from './types';
 
 const apiKey = import.meta.env.VITE_OPENAI_API_KEY;
 const endpoint = 'https://api.openai.com/v1/chat/completions';
@@ -7,7 +9,26 @@ const system = {
     "rephrase": "You need to rephrase a sentence. The input you get from the user is the sentence you need to rephrase. Whatever you write goes directly to the input, so put there only the rephrased text. If the text is good enough, just send back the original text. Use the same tone as the text's one.",
 }
 
-function gptRequest(selectedText, type) {
+const defaultContextMessages = [
+    {
+        role: "system",
+        content: "You're a chrome extension. You might get multiple messages from the user as a context, so you can use them to generate a better response. Before each message that you need to respond to, you'll get a message with the role 'system' and content that explains what's the expected behavior for you. Always use the last system message to guide your response and use the ones that comes before only as a context."
+    }
+];
+
+function gptRequest(selectedText: string, type: keyof typeof system, context?: Context) {
+    const messages = [
+        ...context?.messages || defaultContextMessages,
+        {
+            role: "system",
+            content: system[type],
+        },
+        {
+            role: "user",
+            content: selectedText
+        }
+    ];
+
     const requestOptions = {
         method: 'POST',
         headers: {
@@ -16,54 +37,90 @@ function gptRequest(selectedText, type) {
         },
         body: JSON.stringify({
             model: import.meta.env.VITE_OPENAI_MODEL,
-            messages: [
-                {
-                    role: "system",
-                    content: system[type],
-                },
-                {
-                    role: "user",
-                    content: selectedText
-                }
-            ],
+            messages,
         }),
     };
 
     return fetch(endpoint, requestOptions)
         .then((response) => response.json())
         .then((data) => {
-            console.log(data);
-            return data.choices[0].message.content;
+            const resp = data.choices[0].message.content;
+
+            return [resp, [
+                ...messages,
+                {
+                    role: "assistant",
+                    content: resp,
+                }
+            ]];
         })
         .catch((error) => console.error('Error:', error));
 }
+
+function getSelectedTextAndTitle(): Promise<{ text: string, title: string }> {
+    return new Promise(resolve => {
+        chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
+            chrome.tabs.sendMessage(tabs[0].id, { action: "getSelectedText" }, (resp) => {
+                console.log(resp);
+                
+                resolve(resp);
+            });
+        });
+    });
+}
+
 
 function App() {
     const [text, setText] = useState();
     const [copyText, setCopyText] = useState("Copy");
     const [loading, setLoading] = useState(false);
+    const [contextOptions, setContextOptions] = useState<Context[]>(JSON.parse(localStorage.getItem("contextOptions") || "[]"));
+    const [context, setContext] = useState<Context>();
+    const [createContext, setCreateContext] = useState(false);
+    const [contextName, setContextName] = useState("");
 
-    const getGPTResponse = useCallback((type) => {
-        return new Promise(resolve => {
-            setLoading(true);
-            chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
-                chrome.tabs.sendMessage(tabs[0].id, { action: "getSelectedText" }, async ({text: _text, title}) => {
-                    let text = _text;
+    useEffect(() => {
+        localStorage.setItem("contextOptions", JSON.stringify(contextOptions));
+    }, [contextOptions]);
 
-                    if (type === "comment") {
-                        text = `Website: ${title}\nContent: ${text}`;
-                    }
+    useEffect(() => {
+        if (context) {
+            setContextOptions(contextOptions.map(c => c.name === context.name ? context : c));
+        }
+    }, [context]);
 
-                    console.log("Sending to GPT:", text);
+    const getGPTResponse = useCallback(async (type) => {
+        setLoading(true);
+        let { text, title } = await getSelectedTextAndTitle();
 
-                    const resp = await gptRequest(text, type);
-                    setLoading(false);
-                    setText(resp);
-                    resolve(resp);
-                });
-            });
-        })
-    }, [setLoading, setText]);
+        if (type === "comment") {
+            text = `Website: ${title}\nContent: ${text}`;
+        }
+
+        console.log("Sending to GPT:", text);
+
+        const data = await gptRequest(text, type, context);
+
+        if (!data) {
+            // TODO
+            setLoading(false);
+            return;
+        }
+
+        const [resp, newContextMessages] = data;
+
+        setLoading(false);
+        setText(resp);
+        if (context) {
+            setContext({ ...context, messages: newContextMessages });
+        }
+
+        return resp;
+    }, [setLoading, setText, context, setContext, getSelectedTextAndTitle]);
+
+    const addToContext = useCallback(async () => {
+        setContext({ ...context, messages: [...(context.messages || defaultContextMessages), { role: "user", content: (await getSelectedTextAndTitle()).text }] });
+    }, [context, setContext, getSelectedTextAndTitle]);
 
     const copy = useCallback(() => {
         navigator.clipboard.writeText(text);
@@ -72,16 +129,56 @@ function App() {
     }, [text]);
 
 
-    if (loading) return <p> Loading... </p>
+    if (loading) return <>
+        <Container>
+            <p> Loading... </p>
+        </Container>
+    </>
+
+    if (createContext) return <>
+        <Container>
+            <div>
+                <input type="text" placeholder="Context name" onChange={e => setContextName(e.target.value)} value={contextName} />
+                <button onClick={() => setCreateContext(false)}> Cancel </button>
+                <button onClick={() => {
+                    setContextOptions([...contextOptions, { name: contextName, messages: [] }]);
+                    setContext({ name: contextName, messages: [] });
+                    setContextName("");
+                    setCreateContext(false);
+                }}> Create </button>
+            </div>
+        </Container>
+    </>
 
     if (!text) return <>
-        <button onClick={() => getGPTResponse("comment")}> Comment </button>
-        <button onClick={() => getGPTResponse("rephrase")}> Rephrase </button>
+        <Container>
+            <div>
+                <button onClick={() => getGPTResponse("comment")}> Comment </button>
+                <button onClick={() => getGPTResponse("rephrase")}> Rephrase </button>
+                <button onClick={() => addToContext()}> Add to context </button>
+            </div>
+            <div>
+                <select name="context" id="context" onChange={(e) => {
+                    const context = contextOptions.find(c => c.name === e.target.value);
+                    if (context) {
+                        setContext(context);
+                    } else if (e.target.value === "create") {
+                        setCreateContext(true);
+                    }
+                }}>
+                    <option value=""> Select context </option>
+                    {contextOptions.map(c => <option key={c.name} value={c.name}> {c.name} </option>)}
+                    <option value="create"> Create new context </option>
+                </select>
+            </div>
+        </Container>
     </>
 
     return <>
-        <p> {text} </p>
-        <button onClick={() => copy()}> {copyText} </button >
+        <Container>
+            <p> {text} </p>
+            <button onClick={() => copy()}> {copyText} </button>
+        </Container>
     </>
 }
 

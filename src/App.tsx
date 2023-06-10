@@ -62,7 +62,7 @@ function getSelectedTextAndTitle(): Promise<{ text: string, title: string }> {
         chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
             chrome.tabs.sendMessage(tabs[0].id, { action: "getSelectedText" }, (resp) => {
                 console.log(resp);
-                
+
                 resolve(resp);
             });
         });
@@ -156,6 +156,7 @@ function App() {
                 <button onClick={() => getGPTResponse("comment")}> Comment </button>
                 <button onClick={() => getGPTResponse("rephrase")}> Rephrase </button>
                 <button onClick={() => addToContext()}> Add to context </button>
+                <button onClick={() => localStorage.clear()}> Clear context </button>
             </div>
             <div>
                 <select name="context" id="context" onChange={(e) => {

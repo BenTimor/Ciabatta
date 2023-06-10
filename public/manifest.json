@@ -1,0 +1,23 @@
+{
+    "manifest_version": 2,
+    "name": "Ciabatta",
+    "version": "1.0",
+    "description": "Integrates practically everything with ChatGPT.",
+    "browser_action": {
+        "default_icon": "icon.png",
+        "default_popup": "index.html"
+    },
+    "permissions": [
+        "activeTab"
+    ],
+    "content_scripts": [
+        {
+            "matches": [
+                "<all_urls>"
+            ],
+            "js": [
+                "content.js"
+            ]
+        }
+    ]
+}
